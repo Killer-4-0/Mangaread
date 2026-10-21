@@ -1,4 +1,4 @@
-const CACHE = "manga-offline-v1";
+const CACHE = "manga-offline-v2";
 const SHELL = ["./", "./index.html", "./style.css", "./app.js", "./manifest.json", "./icon.svg"];
 
 self.addEventListener("install", e => {

@@ -61,6 +61,7 @@ function rng(seed){ let s = seed>>>0; return ()=>{ s=(s*1664525+1013904223)>>>0;
 const coverCache = {};
 function getCover(m){
   if (coverCache[m.id]) return coverCache[m.id];
+  if (m.custom) return coverCache[m.id] = m.cover;
   const c = document.createElement("canvas"); c.width=300; c.height=420;
   const x = c.getContext("2d"), R = rng(m.id.length*7919 + 13);
   const g = x.createLinearGradient(0,0,300,420);
@@ -184,11 +185,21 @@ function roundRect(x,a,b,w,h,r){ x.beginPath(); x.moveTo(a+r,b);
 const DB = {
   db:null,
   open(){ return new Promise((res,rej)=>{
-    const q = indexedDB.open("manga-offline",1);
-    q.onupgradeneeded = e => e.target.result.createObjectStore("chapters",{keyPath:"key"});
+    const q = indexedDB.open("manga-offline",2);
+    q.onupgradeneeded = e => {
+      const d = e.target.result;
+      if(!d.objectStoreNames.contains("chapters")) d.createObjectStore("chapters",{keyPath:"key"});
+      if(!d.objectStoreNames.contains("custom")) d.createObjectStore("custom",{keyPath:"id"});
+    };
     q.onsuccess = e => { DB.db=e.target.result; res(); };
     q.onerror = rej;
   });},
+  putCustom(rec){ return new Promise((res,rej)=>{ const t=DB.db.transaction("custom","readwrite");
+    t.objectStore("custom").put(rec); t.oncomplete=res; t.onerror=rej; });},
+  allCustom(){ return new Promise((res,rej)=>{ const t=DB.db.transaction("custom","readonly");
+    const q=t.objectStore("custom").getAll(); q.onsuccess=()=>res(q.result||[]); q.onerror=rej; });},
+  delCustom(id){ return new Promise((res,rej)=>{ const t=DB.db.transaction("custom","readwrite");
+    t.objectStore("custom").delete(id); t.oncomplete=res; t.onerror=rej; });},
   put(rec){ return new Promise((res,rej)=>{ const t=DB.db.transaction("chapters","readwrite");
     t.objectStore("chapters").put(rec); t.oncomplete=res; t.onerror=rej; });},
   all(){ return new Promise((res,rej)=>{ const t=DB.db.transaction("chapters","readonly");
@@ -201,6 +212,8 @@ const DB = {
 
 /* ---------- app state ---------- */
 let downloaded = {};   // key "mangaId:chN" -> {pages:[], ts}
+let customManga = [];  // пользовательские манги (картинки с устройства)
+const ALL = () => [...customManga, ...MANGA];
 let currentTab = "catalog";
 let currentManga = null;
 let deferredInstall = null;
@@ -211,6 +224,101 @@ function toast(msg){ const t=$("#toast"); t.textContent=msg; t.classList.add("sh
 function key(m,ch){ return m.id+":"+ch.n; }
 
 /* ---------- views ---------- */
+
+/* ---------- import custom manga ---------- */
+let importDraft = null;
+
+function openImport(){
+  importDraft = { title:"", author:"", genres:[], chapters:[], curName:"", curPages:[] };
+  renderImport();
+}
+function renderImport(msg){
+  const v = $("#view-catalog");
+  const d = importDraft;
+  v.innerHTML = `
+    <button class="backbtn" id="impBack">← Отмена</button>
+    <div style="font-size:18px;font-weight:800;margin-bottom:14px">➕ Добавить мангу</div>
+    ${msg?`<div class="install-hint" style="display:block">${msg}</div>`:""}
+    <div class="chapter-row" style="display:block">
+      <input class="search" id="impTitle" placeholder="Название манги *" value="${d.title}" style="margin-bottom:10px">
+      <input class="search" id="impAuthor" placeholder="Автор (необязательно)" value="${d.author}" style="margin-bottom:10px">
+      <input class="search" id="impGenres" placeholder="Жанры через запятую (например: боевик, драма)" value="${d.genres.join(", ")}">
+    </div>
+    <div style="font-size:14px;font-weight:700;margin:16px 0 10px">Главы (${d.chapters.length}):</div>
+    ${d.chapters.map((c,i)=>`<div class="chapter-row"><div class="ch-info">
+        <div class="ch-name">Глава ${i+1} — «${c.name}»</div>
+        <div class="ch-sub">${c.pages.length} страниц ✓ офлайн</div></div>
+        <button class="btn btn-del" data-del="${i}">🗑</button></div>`).join("") || ""}
+    <div class="chapter-row" style="display:block">
+      <input class="search" id="impChName" placeholder="Название главы *" value="${d.curName}" style="margin-bottom:10px">
+      <input type="file" id="impFiles" accept="image/*" multiple
+        style="font-size:13px;color:var(--muted);margin-bottom:10px;width:100%">
+      <div id="impPrev" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        ${d.curPages.map(p=>`<img src="${p}" style="width:52px;height:72px;object-fit:cover;border-radius:6px">`).join("")}
+      </div>
+      <button class="btn btn-dl" id="impAddCh" style="width:100%">📄 Добавить главу (${d.curPages.length} стр.)</button>
+    </div>
+    <button class="btn btn-read" id="impSave" style="width:100%;padding:14px;margin-top:8px"
+      ${d.chapters.length?"":"disabled"}>💾 Сохранить мангу</button>
+    <p style="font-size:11px;color:var(--muted);margin-top:12px;line-height:1.6">
+      Картинки сжимаются до ширины 900px и навсегда сохраняются в приложении — читать можно будет без интернета.</p>`;
+  v.querySelector("#impBack").onclick = ()=> showTab("catalog");
+  v.querySelector("#impTitle").oninput = e=> d.title = e.target.value;
+  v.querySelector("#impAuthor").oninput = e=> d.author = e.target.value;
+  v.querySelector("#impGenres").oninput = e=> d.genres = e.target.value.split(",").map(s=>s.trim()).filter(Boolean);
+  v.querySelector("#impChName").oninput = e=> d.curName = e.target.value;
+  v.querySelector("#impFiles").onchange = async e=>{
+    const files = [...e.target.files];
+    if(!files.length) return;
+    toast("⏳ Обработка картинок...");
+    for(const f of files){
+      const url = await downscaleImage(f);
+      if(url) d.curPages.push(url);
+    }
+    renderImport();
+  };
+  v.querySelector("#impAddCh").onclick = ()=>{
+    if(!d.curName.trim()) return toast("⚠️ Введите название главы");
+    if(!d.curPages.length) return toast("⚠️ Выберите картинки главы");
+    d.chapters.push({ n:d.chapters.length+1, name:d.curName.trim(), pages:d.curPages });
+    d.curName = ""; d.curPages = [];
+    renderImport(); toast("✅ Глава добавлена");
+  };
+  v.querySelectorAll("[data-del]").forEach(b=> b.onclick = ()=>{
+    d.chapters.splice(+b.dataset.del,1);
+    d.chapters.forEach((c,i)=>c.n=i+1);
+    renderImport();
+  });
+  v.querySelector("#impSave").onclick = async ()=>{
+    if(!d.title.trim()) return toast("⚠️ Введите название манги");
+    const id = "custom-" + Date.now();
+    const manga = { id, custom:true, title:d.title.trim(),
+      author:d.author.trim()||"неизвестно", genres:d.genres.length?d.genres:["без жанра"],
+      year:new Date().getFullYear(), rating:"—", desc:"Моя манга · добавлено с устройства",
+      cover:d.chapters[0].pages[0], chapters:d.chapters };
+    await DB.putCustom(manga);
+    customManga.unshift(manga);
+    toast("💾 Манга сохранена!"); openDetail(id);
+  };
+}
+function downscaleImage(file){
+  return new Promise(res=>{
+    const img = new Image();
+    img.onload = ()=>{
+      const scale = Math.min(1, 900/img.width);
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width*scale); c.height = Math.round(img.height*scale);
+      c.getContext("2d").drawImage(img,0,0,c.width,c.height);
+      URL.revokeObjectURL(img.src);
+      res(c.toDataURL("image/jpeg", .85));
+    };
+    img.onerror = ()=>{ URL.revokeObjectURL(img.src); res(null); };
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+/* ---------- catalog (entry for openImport defined above) ---------- */
+
 function showTab(tab){
   currentTab = tab;
   document.querySelectorAll("nav.bottom button").forEach(b=>
@@ -225,8 +333,9 @@ function showTab(tab){
 function renderCatalog(){
   const v = $("#view-catalog");
   const q = (v._q||"").toLowerCase();
-  let html = `<input class="search" placeholder="🔍 Поиск манги..." value="${v._q||""}">`;
-  const list = MANGA.filter(m => !q || (m.title+m.author+m.genres.join(" ")).toLowerCase().includes(q));
+  let html = `<input class="search" placeholder="🔍 Поиск манги..." value="${v._q||""}">
+    <button class="btn btn-read" id="addMangaBtn" style="width:100%;padding:13px;margin-bottom:14px">➕ Добавить свою мангу (с телефона)</button>`;
+  const list = ALL().filter(m => !q || (m.title+" "+m.author+" "+m.genres.join(" ")).toLowerCase().includes(q));
   if(!list.length) html += `<div class="empty"><div class="big">🤷</div>Ничего не найдено</div>`;
   for(const m of list){
     const dlCount = m.chapters.filter(ch=>downloaded[key(m,ch)]).length;
@@ -234,7 +343,7 @@ function renderCatalog(){
       <img class="cover" src="${getCover(m)}" alt="">
       <div class="mcard-body">
         <div class="mcard-title">${m.title}</div>
-        <div class="mcard-meta">⭐ ${m.rating} · ${m.year} · ${m.author}<br>${m.chapters.length} глав · ${m.desc.slice(0,60)}…</div>
+        <div class="mcard-meta">⭐ ${m.rating} · ${m.year} · ${m.author}<br>${m.chapters.length} ${m.chapters.length===1?"глава":"глав"} · ${m.desc.slice(0,60)}…</div>
         <div class="mcard-tags">
           ${m.genres.map(g=>`<span class="tag">${g}</span>`).join("")}
           ${dlCount?`<span class="tag dl">⬇ ${dlCount} офлайн</span>`:""}
@@ -245,10 +354,11 @@ function renderCatalog(){
   v.querySelector(".search").addEventListener("input", e=>{ v._q=e.target.value; renderCatalog();
     v.querySelector(".search").focus(); const s=v.querySelector(".search"); s.setSelectionRange(s.value.length,s.value.length);});
   v.querySelectorAll(".manga-card").forEach(el=> el.onclick = ()=> openDetail(el.dataset.id));
+  v.querySelector("#addMangaBtn").onclick = openImport;
 }
 
 function openDetail(id){
-  const m = MANGA.find(x=>x.id===id); currentManga = m;
+  const m = ALL().find(x=>x.id===id); currentManga = m;
   const v = $("#view-detail"); $("#view-catalog").style.display="none"; $("#view-downloads").style.display="none";
   v.style.display="";
   let html = `<button class="backbtn" id="backBtn">← Назад</button>
@@ -258,17 +368,25 @@ function openDetail(id){
         <div style="font-size:12px;color:var(--muted);line-height:1.6">${m.author} · ${m.year} · ⭐ ${m.rating}<br>
         ${m.genres.map(g=>`<span class="tag">${g}</span>`).join(" ")}</div>
         <p style="font-size:13px;color:#cfc9e0;margin-top:10px;line-height:1.55">${m.desc}</p>
+      ${m.custom?`<button class="btn btn-del" id="delMangaBtn" style="margin-top:10px">🗑 Удалить мангу</button>`:""}
       </div></div>`;
   for(const ch of m.chapters){
     const k = key(m,ch), done = !!downloaded[k];
     html += `<div class="chapter-row" data-ch="${ch.n}">
       <div class="ch-info"><div class="ch-name">Глава ${ch.n} — «${ch.name}»</div>
-      <div class="ch-sub">${ch.pages} страниц ${done?`· ✅ скачано офлайн (${(downloaded[k].size/1024).toFixed(0)} КБ)`:""}</div></div>
-      <button class="btn btn-dl ${done?"done":""}" data-act="dl">${done?"✓ Скачано":"⬇ Скачать"}</button>
+      <div class="ch-sub">${Array.isArray(ch.pages)?ch.pages.length:ch.pages} страниц ${done?`· ✅ скачано офлайн (${(downloaded[k].size/1024).toFixed(0)} КБ)`:""}</div></div>
+      ${m.custom?`<button class="btn btn-dl done" data-act="dl" disabled>✓ офлайн</button>`:
+        `<button class="btn btn-dl ${done?"done":""}" data-act="dl">${done?"✓ Скачано":"⬇ Скачать"}</button>`}
       <button class="btn btn-read" data-act="read">Читать</button></div>`;
   }
   v.innerHTML = html;
   v.querySelector("#backBtn").onclick = ()=> showTab("catalog");
+  const delBtn = v.querySelector("#delMangaBtn");
+  if(delBtn) delBtn.onclick = async ()=>{
+    await DB.delCustom(m.id);
+    customManga = customManga.filter(x=>x.id!==m.id);
+    toast("🗑 Манга удалена"); showTab("catalog");
+  };
   v.querySelectorAll(".chapter-row").forEach(row=>{
     const ch = m.chapters.find(c=>c.n == row.dataset.ch);
     row.querySelector('[data-act="dl"]').onclick = e => downloadChapter(m,ch,e.target);
@@ -306,7 +424,7 @@ async function renderDownloads(){
   let html = `<div style="font-size:12px;color:var(--muted);margin-bottom:12px">
     ${items.length} глав скачано · ${totalKB} МБ · доступно офлайн ✈️</div>`;
   for(const it of items){
-    const m = MANGA.find(x=>x.id===it.mangaId);
+    const m = ALL().find(x=>x.id===it.mangaId) || MANGA[0];
     html += `<div class="dl-item" data-key="${it.key}">
       <img src="${getCover(m)}" alt="">
       <div class="inf"><div class="nm">${it.title}</div>
@@ -318,7 +436,7 @@ async function renderDownloads(){
   v.querySelectorAll(".dl-item").forEach(el=>{
     const it = items.find(i=>i.key===el.dataset.key);
     el.querySelector('[data-act="read"]').onclick = ()=>{
-      const m = MANGA.find(x=>x.id===it.mangaId);
+      const m = ALL().find(x=>x.id===it.mangaId);
       openReader(m, {n:it.chN, name:it.chName, pages:it.pages.length});
     };
     el.querySelector('[data-act="del"]').onclick = async ()=>{
@@ -334,7 +452,8 @@ function openReader(m,ch){
   const k = key(m,ch);
   const rec = downloaded[k];
   const pages = rec ? rec.pages
-    : Array.from({length:ch.pages},(_,p)=>getPage(m,ch,p,ch.pages));
+    : (Array.isArray(ch.pages) ? ch.pages
+    : Array.from({length:ch.pages},(_,p)=>getPage(m,ch,p,ch.pages)));
   readerState = { m, ch, pages, page:0 };
   $("#rTitle").textContent = `${m.title} · гл. ${ch.n}`;
   const pagesEl = $("#pages");
@@ -404,6 +523,7 @@ $("#installBtn").onclick = async ()=>{
     $("#installHint").style.display="none";
   await DB.open();
   for(const rec of await DB.all()) downloaded[rec.key]=rec;
+  customManga = await DB.allCustom();
   updateNet();
   showTab("catalog");
 })();
