@@ -1,0 +1,17 @@
+{
+  "name": "MangaOffline — читалка манги офлайн",
+  "short_name": "MangaOffline",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0e0e12",
+  "theme_color": "#7c3aed",
+  "description": "Читай и скачивай мангу для офлайн-чтения",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

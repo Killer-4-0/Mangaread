@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0e0e12">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>MangaOffline — читалка офлайн</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header class="top">
+    <div class="logo">Manga<span>Offline</span></div>
+    <div id="netbadge" class="netbadge on">● онлайн</div>
+  </header>
+
+  <div class="install-hint" id="installHint">
+    📲 <b>Установите приложение на телефон</b> — оно будет открываться как обычное приложение
+    и работать без интернета.<br>
+    <b>Android:</b> меню браузера → «Установить приложение».<br>
+    <b>iPhone:</b> «Поделиться» → «На экран Домой».
+    <button id="installBtn">⬇ Установить приложение</button>
+  </div>
+
+  <div id="view-catalog"></div>
+  <div id="view-detail" style="display:none"></div>
+  <div id="view-downloads" style="display:none"></div>
+</div>
+
+<div id="reader">
+  <div class="reader-bar">
+    <button id="rClose">✕</button>
+    <div class="title" id="rTitle"></div>
+    <span id="pageinfo"></span>
+    <button id="rPrev">◀</button>
+    <button id="rNext">▶</button>
+  </div>
+  <div id="pages"></div>
+  <div id="progress"><i></i></div>
+</div>
+
+<nav class="bottom">
+  <button data-tab="catalog" class="active"><span class="ico">📚</span>Каталог</button>
+  <button data-tab="downloads"><span class="ico">⬇️</span>Загрузки</button>
+</nav>
+
+<div id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>
